@@ -6,22 +6,35 @@ import org.apache.http.auth.UsernamePasswordCredentials;
 import org.apache.http.client.CredentialsProvider;
 import org.apache.http.impl.client.BasicCredentialsProvider;
 import org.apache.http.impl.client.DefaultConnectionKeepAliveStrategy;
+import org.apache.kafka.clients.CommonClientConfigs;
+import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.ConsumerRecords;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.common.serialization.StringDeserializer;
+import org.opensearch.OpenSearchStatusException;
+import org.opensearch.action.index.IndexRequest;
+import org.opensearch.action.index.IndexResponse;
 import org.opensearch.client.RequestOptions;
 import org.opensearch.client.RestClient;
 import org.opensearch.client.RestHighLevelClient;
 import org.opensearch.client.indices.CreateIndexRequest;
 import org.opensearch.client.indices.GetIndexRequest;
+import org.opensearch.common.xcontent.XContentType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.net.URI;
+import java.time.Duration;
+import java.util.Collections;
+import java.util.Properties;
 
 public class OpenSearchConsumer {
 
     public static RestHighLevelClient createOpenSearchClient() {
-        // String connString = "http://localhost:9200";
-        String connString = "https://rdesc5uqkj:o784fvjro9@bmiguelr-682552580.eu-central-1.bonsaisearch.net:443";
+        String connString = "http://localhost:9200";
+        // String connString = "https://rdesc5uqkj:o784fvjro9@bmiguelr-682552580.eu-central-1.bonsaisearch.net:443";
 
         // we build a URI from the connection string
         RestHighLevelClient restHighLevelClient;
@@ -52,16 +65,34 @@ public class OpenSearchConsumer {
         return restHighLevelClient;
     }
 
-    public static void main(String[] args) {
+    private static KafkaConsumer<String, String> createKafkaConsumer() {
+
+        String groupId = "consumer-opensearch-demo";
+
+        // create consumer configs
+        Properties properties = new Properties();
+        properties.setProperty(CommonClientConfigs.BOOTSTRAP_SERVERS_CONFIG, "127.0.0.1:9092");
+        properties.setProperty(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+        properties.setProperty(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+        properties.setProperty(ConsumerConfig.GROUP_ID_CONFIG, groupId);
+        properties.setProperty(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "latest");
+
+        // create consumer
+        return new KafkaConsumer<>(properties);
+    }
+
+    public static void main(String[] args) throws IOException {
 
         Logger log = LoggerFactory.getLogger(OpenSearchConsumer.class.getSimpleName());
 
         // first create an OpenSearch Client
         RestHighLevelClient openSearchClient = createOpenSearchClient();
 
-        // we need to create the index to OpenSearch if it doesn't exist already
+        // create our Kafka Consumer
+        KafkaConsumer<String, String> consumer = createKafkaConsumer();
 
-        try (openSearchClient) {
+        // we need to create the index to OpenSearch if it doesn't exist already
+        try (openSearchClient; consumer) {
 
             boolean indexExists = openSearchClient.indices().exists(new GetIndexRequest("wikimedia"), RequestOptions.DEFAULT);
 
@@ -73,11 +104,32 @@ public class OpenSearchConsumer {
                 log.info("The wikimedia Index already exists");
             }
 
+            consumer.subscribe(Collections.singleton("wikimedia.recentchanges"));
 
-        } catch (IOException e) {
-            throw new RuntimeException(e);
+            while (true) {
+
+                ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(3000));
+
+                int recordCount = records.count();
+                log.info("Received " + recordCount + " records(s)");
+
+                for (ConsumerRecord<String, String> record : records) {
+
+                    try {
+                        // send the record into OpenSearch
+                        IndexRequest indexRequest = new IndexRequest("wikimedia")
+                                .source(record.value(), XContentType.JSON);
+
+                        IndexResponse response = openSearchClient.index(indexRequest, RequestOptions.DEFAULT);
+
+                        log.info(response.getId());
+
+                    } catch (Exception e) {
+
+                        // Nothing
+                    }
+                }
+            }
         }
-
-
     }
 }
