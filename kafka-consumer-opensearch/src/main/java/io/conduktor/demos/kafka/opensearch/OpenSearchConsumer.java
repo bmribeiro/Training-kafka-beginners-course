@@ -1,5 +1,6 @@
 package io.conduktor.demos.kafka.opensearch;
 
+import com.google.gson.JsonParser;
 import org.apache.http.HttpHost;
 import org.apache.http.auth.AuthScope;
 import org.apache.http.auth.UsernamePasswordCredentials;
@@ -77,8 +78,21 @@ public class OpenSearchConsumer {
         properties.setProperty(ConsumerConfig.GROUP_ID_CONFIG, groupId);
         properties.setProperty(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "latest");
 
+        properties.setProperty(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
+
         // create consumer
         return new KafkaConsumer<>(properties);
+    }
+
+    private static String extractId(String json) {
+
+        // gson library
+        return JsonParser.parseString(json)
+                .getAsJsonObject()
+                .get("meta")
+                .getAsJsonObject()
+                .get("id")
+                .getAsString();
     }
 
     public static void main(String[] args) throws IOException {
@@ -115,10 +129,22 @@ public class OpenSearchConsumer {
 
                 for (ConsumerRecord<String, String> record : records) {
 
+                    // send the record into OpenSearch
+
+                    // strategy 1
+                    // define an ID using Kafka Record coordinates
+
+                    // String id = record.topic() + "_" + record.partition() + "_" + record.offset();
+
                     try {
-                        // send the record into OpenSearch
+
+                        // strategy 2
+                        // we extract the ID from the JSON value
+
+                        String id = extractId(record.value());
+
                         IndexRequest indexRequest = new IndexRequest("wikimedia")
-                                .source(record.value(), XContentType.JSON);
+                                .source(record.value(), XContentType.JSON).id(id);
 
                         IndexResponse response = openSearchClient.index(indexRequest, RequestOptions.DEFAULT);
 
@@ -129,7 +155,13 @@ public class OpenSearchConsumer {
                         // Nothing
                     }
                 }
+
+                // commit offsets after the batch is consumed
+                consumer.commitSync();
+                log.info("Offsets have been committed!");
             }
         }
     }
+
+
 }
